@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include "CachePolicy.h"
 
@@ -51,7 +52,7 @@ public:
             addNewNode(key, value);       
         }else{
             it->second->value_ = value;
-            refreshExistingNode(keyToNode_[key]);
+            refreshExistingNode(it->second);
         }
     }
 
@@ -71,6 +72,15 @@ public:
         Value value{};
         get(k, value);
         return value;
+    }
+
+    void remove(Key key){
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = keyToNode_.find(key);
+        if (it != keyToNode_.end()){
+            removeNodeFromList(it->second);
+            keyToNode_.erase(key);
+        }
     }
 
 private:
@@ -118,5 +128,95 @@ private:
     }
 
 };
+
+template<typename Key, typename Value>
+class LRUKCache : public LRUCache<Key, Value>{
+public:
+    LRUKCache(int capacity, int k, int historySize)
+    : LRUCache<Key, Value>(capacity)
+    , k_(k)
+    , historyRecord_(std::make_unique<LRUCache<Key, std::pair<int, std::optional<Value>>>>(historySize))
+    {}
+    ~LRUKCache() = default;
+
+    bool get(Key key, Value& value) override{
+        std::lock_guard<std::mutex> lock(mutexK_);
+        bool inMainLRU = LRUCache::get(key, value);
+        if (inMainLRU){
+            return true;
+        }
+
+        //not in main LRU, update history list
+        //First check if the element is in history list and update access count
+        std::pair<int, std::optional<Value>> p;
+        bool inHistoryRecord = historyRecord_->get(key, p);
+        if (!inHistoryRecord){
+            p = {1, std::nullopt};
+            historyRecord_->put(key, {1, std::nullopt});
+        }else{
+            p.first++;
+            historyRecord_->put(key, p);
+        }
+
+        //Then check if we need to add it to main LRU
+        if (p.first >= k_){
+            //add new elemnt to main LRU and delete from history list
+            //if we can find the value in history map, add to main LRU
+            std::pair<int, std::optional<Value>> tempPair;
+            historyRecord_->get(key, tempPair);
+            if (tempPair.second){
+                LRUCache::put(key, *(tempPair.second));
+
+                //delete from history list
+                historyRecord_->remove(key);
+
+                value = *(tempPair.second);
+                return true;
+            }
+        }
+        value = Value{};
+        return false;
+    }
+
+    Value get(Key key) override{
+        Value value{};
+        get(key, value);
+        return value;
+    }
+
+    void put(Key key, Value value) override{
+        std::lock_guard<std::mutex> lock(mutexK_);
+        Value tempVal{};
+        bool inMainLRU = LRUCache::get(key, tempVal);
+        if (inMainLRU){
+            LRUCache::put(key, value);
+            return;
+        }
+
+        //not in main LRU, put to history list
+        std::pair<int, std::optional<Value>> p;
+        bool inHistory = historyRecord_->get(key, p);
+        if (inHistory){
+            p.first++;
+            p.second = value;
+            historyRecord_->put(key, p);
+        }else{
+            p = {1, value};
+            historyRecord_->put(key, p);
+        }
+
+        if (p.first >= k_){
+            LRUCache::put(key, value);
+            historyRecord_->remove(key);
+        }
+    }
+
+private:
+    int k_;
+    std::mutex mutexK_;
+    std::unique_ptr<LRUCache<Key, std::pair<int, std::optional<Value>>>> historyRecord_; // key to {visit numbers, value}
+};
+
+
 
 }
