@@ -4,6 +4,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
+#include <cmath>
 
 #include "CachePolicy.h"
 
@@ -83,6 +85,10 @@ public:
         }
     }
 
+    int getCapacity(){
+        return capacity_;
+    }
+
 private:
     NodePtr dummyHead_;
     NodePtr dummyTail_;
@@ -159,7 +165,7 @@ public:
         }
 
         //Then check if we need to add it to main LRU
-        if (p.first >= k_){
+        if (p.first >= k_s){
             //add new elemnt to main LRU and delete from history list
             //if we can find the value in history map, add to main LRU
             std::pair<int, std::optional<Value>> tempPair;
@@ -217,6 +223,45 @@ private:
     std::unique_ptr<LRUCache<Key, std::pair<int, std::optional<Value>>>> historyRecord_; // key to {visit numbers, value}
 };
 
+template<typename Key, typename Value>
+class HashLRUCache : public CachePolicy<Key, Value>{
+public:
+    HashLRUCache(int capacity, int shardNum){
+        if (shardNum > 0){
+            shardNum_ = shardNum;
+        }else{
+            unsigned int hc = std::thread::hardware_concurrency();
+            shardNum_ = hc > 0 ? static_cast<int>(hc) : 1;
+        }
+        size_t shardSize = std::ceil(capacity / static_cast<double>(shardNum_));
+        for (int i = 0; i < shardNum_; i++){
+            sliceCache_.emplace_back(std::make_unique<LRUCache<Key, Value>>(shardSize));
+        }
+    }
 
+    void put(Key key, Value value) override{
+        size_t ind = Hash(key) % shardNum_;
+        sliceCache_[ind]->put(key, value);
+    }
+
+    Value get(Key key) override{
+        size_t ind = Hash(key) % shardNum_;
+        return sliceCache_[ind]->get(key);
+    }
+
+    bool get(Key key, Value& value) override{
+        size_t ind = Hash(key) % shardNum_;
+        return sliceCache_[ind]->get(key, value);
+    }
+
+private:
+    size_t Hash(const Key& key) const{
+        return std::hash<Key>{}(key);
+    }
+
+private:
+    int shardNum_;
+    std::vector<std::unique_ptr<LRUCache<Key, Value>>> sliceCache_;
+};
 
 }
